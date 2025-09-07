@@ -131,6 +131,11 @@ def main() -> None:
     p.add_argument("--sims", type=int, default=128, help="MCTS simulations per move")
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--temp", type=float, default=1.0)
+    p.add_argument("--temp_min", type=float, default=0.1)
+    p.add_argument("--temp_decay", type=float, default=0.999)
+    p.add_argument("--heuristic_eps_start", type=float, default=0.5)
+    p.add_argument("--heuristic_eps_end", type=float, default=0.1)
+    p.add_argument("--heuristic_eps_decay", type=float, default=0.999)
     p.add_argument("--channels", type=int, default=64)
     p.add_argument("--blocks", type=int, default=4)
     p.add_argument("--batch_size", type=int, default=64)
@@ -145,7 +150,8 @@ def main() -> None:
     size = 5
     k = 3
     net = AlphaZeroNet(board_size=size, k=k, n_rot=4, channels=args.channels, blocks=args.blocks).to(Device)
-    mcts = MCTS(net, n_simulations=args.sims, heuristic_prior_eps=float(args.heuristic_prior_eps), score_norm=ScoreNormalizer())
+    # Initialize with starting heuristic mixing; we'll anneal per episode
+    mcts = MCTS(net, n_simulations=args.sims, heuristic_prior_eps=float(args.heuristic_eps_start if args.heuristic_prior_eps == 0.0 else args.heuristic_prior_eps), score_norm=ScoreNormalizer())
 
     buf = ReplayBuffer(capacity=50_000)
 
@@ -153,8 +159,10 @@ def main() -> None:
 
     writer = SummaryWriter(args.logdir) if args.logdir else None
 
+    temp = float(args.temp)
+    heur_eps = float(mcts.heuristic_prior_eps)
     for ep in trange(args.episodes, desc="Self-play"):
-        xs, pis, zs, stats = play_one_game(mcts, temp=args.temp)
+        xs, pis, zs, stats = play_one_game(mcts, temp=temp)
         for x, pi, z in zip(xs, pis, zs):
             buf.push(x, pi, z)
         if args.verbose:
@@ -171,6 +179,11 @@ def main() -> None:
             if writer is not None:
                 writer.add_scalar("train/policy_loss", pol_loss, ep)
                 writer.add_scalar("train/value_loss", val_loss, ep)
+        # Anneal temperature and heuristic eps
+        temp = max(args.temp_min, temp * args.temp_decay)
+        if args.heuristic_prior_eps == 0.0:
+            heur_eps = max(args.heuristic_eps_end, heur_eps * args.heuristic_eps_decay)
+            mcts.heuristic_prior_eps = heur_eps
 
     torch.save(net.state_dict(), args.save_path)
     print(f"Saved AlphaZeroNet to {args.save_path}")

@@ -12,7 +12,7 @@ class ScoreNormalizer:
     normalize(x) returns tanh((x - mean) / max(std, eps_or_initial)).
     """
 
-    initial_scale: float = 50.0
+    initial_scale: float = 100.0
     eps: float = 1e-6
 
     # Running stats

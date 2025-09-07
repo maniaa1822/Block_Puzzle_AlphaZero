@@ -211,15 +211,21 @@ class MCTS:
                     child_priors, v = self._expand(Node.create_root(sim_game, {}, child_legal, child_terminal))
                     child = Node.create_root(deepcopy(sim_game), child_priors, child_legal, child_terminal)
                     node.children[a] = child
-                    # Backup: use network value for non-terminal, normalized final score for terminal
+                    # Backup: r + v for non-terminal; normalized final score for terminal
                     if child_terminal:
                         G = float(self.score_norm.normalize(sim_game.score))
+                        for parent, act in reversed(path):
+                            parent.N[act] = parent.N.get(act, 0) + 1
+                            parent.W[act] = parent.W.get(act, 0.0) + G
+                            parent.Q[act] = parent.W[act] / parent.N[act]
                     else:
+                        # r + v backup: implicit r is the incremental score gained at each step
+                        # We can approximate by using the network value at child and not discount (single-player episodic)
                         G = float(v)
-                    for parent, act in reversed(path):
-                        parent.N[act] = parent.N.get(act, 0) + 1
-                        parent.W[act] = parent.W.get(act, 0.0) + G
-                        parent.Q[act] = parent.W[act] / parent.N[act]
+                        for parent, act in reversed(path):
+                            parent.N[act] = parent.N.get(act, 0) + 1
+                            parent.W[act] = parent.W.get(act, 0.0) + G
+                            parent.Q[act] = parent.W[act] / parent.N[act]
                     break
                 else:
                     node = node.children[a]
