@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from typing import Tuple
+import random
 
 import numpy as np
 import pygame
@@ -25,18 +26,25 @@ def draw_board(screen: pygame.Surface, grid, cell_size: int, margin: int) -> Non
             pygame.draw.rect(screen, _color_for_value(int(grid[y, x])), rect)
 
 
-def run(model_path: str, sims: int, channels: int, blocks: int, temp: float = 0.0, heuristic_prior_eps: float = 0.0) -> None:
+def run(model_path: str | None, sims: int, channels: int, blocks: int, temp: float = 0.0, heuristic_prior_eps: float = 0.0, random_play: bool = False, board_size: int = 5, heuristic_only: bool = False) -> None:
     pygame.init()
     try:
-        cfg = GameConfig(grid_size=5)
+        cfg = GameConfig(grid_size=int(board_size))
         game = BlockPuzzleGame(cfg)
         size = int(game.grid.size)
         k = int(game.config.pieces_per_set)
-        net = AlphaZeroNet(board_size=size, k=k, n_rot=4, channels=channels, blocks=blocks).to(Device)
-        state = torch.load(model_path, map_location=Device)
-        net.load_state_dict(state)
-        net.eval()
-        mcts = MCTS(net, n_simulations=int(sims), heuristic_prior_eps=float(heuristic_prior_eps))
+        mcts = None
+        if not random_play:
+            if heuristic_only:
+                mcts = MCTS(net=None, n_simulations=int(sims), heuristic_prior_eps=1.0, use_heuristic_everywhere=True)
+            else:
+                if not model_path:
+                    raise RuntimeError("--model is required unless --random or --heuristic_only is set")
+                net = AlphaZeroNet(board_size=size, k=k, n_rot=4, channels=channels, blocks=blocks).to(Device)
+                state = torch.load(model_path, map_location=Device)
+                net.load_state_dict(state)
+                net.eval()
+                mcts = MCTS(net, n_simulations=int(sims), heuristic_prior_eps=float(heuristic_prior_eps))
 
         cell_size = 64
         margin = 20
@@ -45,7 +53,7 @@ def run(model_path: str, sims: int, channels: int, blocks: int, temp: float = 0.
         width = margin * 2 + board_px_w
         height = margin * 2 + board_px_h + 40
         screen = pygame.display.set_mode((width, height))
-        pygame.display.set_caption("Block Puzzle 5x5 - AlphaZero Render")
+        pygame.display.set_caption(f"Block Puzzle {game.grid.size}x{game.grid.size} - AlphaZero Render")
         font = pygame.font.SysFont(None, 28)
         clock = pygame.time.Clock()
 
@@ -61,18 +69,26 @@ def run(model_path: str, sims: int, channels: int, blocks: int, temp: float = 0.
                         game.reset()
 
             if not game.game_over:
-                pi = mcts.run(game, add_root_noise=False)
-                if float(pi.sum()) > 0.0:
-                    if temp > 1e-8:
-                        probs = pi ** (1.0 / temp)
-                        probs = probs / (np.sum(probs) + 1e-8)
-                        idx = int(np.random.choice(len(probs), p=probs))
+                if random_play:
+                    actions = game.get_valid_actions()
+                    if actions:
+                        p, x, y, r = random.choice(actions)
+                        ok, gained, lines = game.place_piece(p, x, y, r)
                     else:
-                        idx = int(np.argmax(pi))
-                    p, x, y, r = unflatten_action(idx, size=size, n_rot=4)
-                    ok, gained, lines = game.place_piece(p, x, y, r)
+                        game.game_over = True
                 else:
-                    game.game_over = True
+                    pi = mcts.run(game, add_root_noise=False)
+                    if float(pi.sum()) > 0.0:
+                        if temp > 1e-8:
+                            probs = pi ** (1.0 / temp)
+                            probs = probs / (np.sum(probs) + 1e-8)
+                            idx = int(np.random.choice(len(probs), p=probs))
+                        else:
+                            idx = int(np.argmax(pi))
+                        p, x, y, r = unflatten_action(idx, size=size, n_rot=4)
+                        ok, gained, lines = game.place_piece(p, x, y, r)
+                    else:
+                        game.game_over = True
 
             draw_board(screen, game.grid.grid, cell_size, margin)
             status = f"Score: {game.score}  Steps: {game.step_count}  Pieces left: {len(game.current_pieces)}"
@@ -89,14 +105,17 @@ def run(model_path: str, sims: int, channels: int, blocks: int, temp: float = 0.
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--model", type=str, required=True)
+    p.add_argument("--model", type=str, default="", help="Path to model (.pt). Optional for --random or --heuristic_only")
     p.add_argument("--sims", type=int, default=64)
     p.add_argument("--channels", type=int, default=64)
     p.add_argument("--blocks", type=int, default=4)
     p.add_argument("--temp", type=float, default=0.0)
     p.add_argument("--heuristic_prior_eps", type=float, default=0.0)
+    p.add_argument("--size", type=int, default=5)
+    p.add_argument("--heuristic_only", action="store_true")
+    p.add_argument("--random", action="store_true")
     args = p.parse_args()
-    run(args.model, args.sims, args.channels, args.blocks, args.temp, args.heuristic_prior_eps)
+    run(args.model or None, args.sims, args.channels, args.blocks, args.temp, args.heuristic_prior_eps, args.random, args.size, args.heuristic_only)
 
 
 if __name__ == "__main__":  # pragma: no cover

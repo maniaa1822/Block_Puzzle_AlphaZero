@@ -175,13 +175,19 @@ def main() -> None:
     p.add_argument("--heuristic_prior_eps", type=float, default=0.0)
     p.add_argument("--workers", type=int, default=1, help="Number of self-play worker processes")
     p.add_argument("--episodes_per_update", type=int, default=10, help="Episodes per training update across workers")
+    # Value normalization (fixed range optional)
+    p.add_argument("--value_fixed_min", type=float, default=0, help="If set with --value_fixed_max, linearly map [min,max] -> [-1,1]")
+    p.add_argument("--value_fixed_max", type=float, default=1000, help="If set with --value_fixed_min, linearly map [min,max] -> [-1,1]")
     args = p.parse_args()
 
     size = 5
     k = 3
     net = AlphaZeroNet(board_size=size, k=k, n_rot=4, channels=args.channels, blocks=args.blocks).to(Device)
     # Shared value normalizer across episodes
-    value_normalizer = ValueNormalizer()
+    value_normalizer = ValueNormalizer(
+        fixed_min=args.value_fixed_min,
+        fixed_max=args.value_fixed_max,
+    )
 
     buf = ReplayBuffer(capacity=50_000)
 

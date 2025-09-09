@@ -53,19 +53,30 @@ def play_one_game(mcts: MCTS, temp: float = 1.0) -> Tuple[List[np.ndarray], List
         pi = mcts.run(deepcopy(game), add_root_noise=True)
         # Temperature sampling
         if temp > 1e-8:
-            probs = pi ** (1.0 / temp)
-            probs = probs / (np.sum(probs) + 1e-8)
+            probs = (pi ** (1.0 / temp)).astype(np.float64)
+            probs = np.maximum(probs, 0.0)
+            s = float(np.sum(probs))
+            if not np.isfinite(s) or s <= 0.0:
+                probs = None
+            else:
+                probs /= s
+                # ensure exact sum and non-negativity
+                idx = int(np.argmax(probs))
+                probs[idx] += 1.0 - float(np.sum(probs))
         else:
-            probs = np.zeros_like(pi)
+            probs = np.zeros_like(pi, dtype=np.float64)
             if pi.sum() > 0:
-                probs[np.argmax(pi)] = 1.0
+                probs[int(np.argmax(pi))] = 1.0
         # Save training pair (state, pi)
         x = encode_state_planes(game, k).numpy()  # (C,H,W)
         x_list.append(x)
         pi_list.append(probs.astype(np.float32))
 
         # Sample and play action
-        flat_idx = int(np.random.choice(len(probs), p=probs if probs.sum() > 0 else None))
+        if probs is None:
+            flat_idx = int(np.random.choice(len(pi)))
+        else:
+            flat_idx = int(np.random.choice(len(probs), p=probs))
         piece, x_pos, y_pos, r = unflatten_action(flat_idx, size, n_rot=4)
         ok, gained, _ = game.place_piece(piece, x_pos, y_pos, r)
         if not ok:
@@ -142,16 +153,25 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--save_path", type=str, default="./models/az_blockpuzzle_5x5.pt")
+    p.add_argument("--ckpt_every", type=int, default=100, help="Episodes between checkpoints (0 to disable)")
     p.add_argument("--logdir", type=str, default="", help="TensorBoard log dir (optional)")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--heuristic_prior_eps", type=float, default=0.0)
+    # Fixed mapping flags for ScoreNormalizer
+    p.add_argument("--value_fixed_min", type=float, default=None, help="If set with --value_fixed_max, linearly map [min,max] -> [-1,1]")
+    p.add_argument("--value_fixed_max", type=float, default=None, help="If set with --value_fixed_min, linearly map [min,max] -> [-1,1]")
     args = p.parse_args()
 
     size = 5
     k = 3
     net = AlphaZeroNet(board_size=size, k=k, n_rot=4, channels=args.channels, blocks=args.blocks).to(Device)
     # Initialize with starting heuristic mixing; we'll anneal per episode
-    mcts = MCTS(net, n_simulations=args.sims, heuristic_prior_eps=float(args.heuristic_eps_start if args.heuristic_prior_eps == 0.0 else args.heuristic_prior_eps), score_norm=ScoreNormalizer())
+    mcts = MCTS(
+        net,
+        n_simulations=args.sims,
+        heuristic_prior_eps=float(args.heuristic_eps_start if args.heuristic_prior_eps == 0.0 else args.heuristic_prior_eps),
+        score_norm=ScoreNormalizer(fixed_min=args.value_fixed_min, fixed_max=args.value_fixed_max),
+    )
 
     buf = ReplayBuffer(capacity=50_000)
 
@@ -184,6 +204,13 @@ def main() -> None:
         if args.heuristic_prior_eps == 0.0:
             heur_eps = max(args.heuristic_eps_end, heur_eps * args.heuristic_eps_decay)
             mcts.heuristic_prior_eps = heur_eps
+        # Periodic checkpointing
+        if args.ckpt_every > 0 and (ep + 1) % int(args.ckpt_every) == 0:
+            root, ext = os.path.splitext(args.save_path)
+            ckpt_path = f"{root}_ep{ep+1}{ext}"
+            torch.save(net.state_dict(), ckpt_path)
+            if args.verbose:
+                print(f"Checkpoint saved: {ckpt_path}")
 
     torch.save(net.state_dict(), args.save_path)
     print(f"Saved AlphaZeroNet to {args.save_path}")

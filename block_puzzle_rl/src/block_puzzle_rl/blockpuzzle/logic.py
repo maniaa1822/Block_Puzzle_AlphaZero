@@ -210,12 +210,15 @@ class BlockPuzzleGame:
         self.generate_new_piece_set()
 
     def generate_new_piece_set(self) -> None:
-        """Generate a new set: one each of I(2), O(2x2), L(2x2-L), shuffled."""
-        base_set = [Piece(PieceType.I), Piece(PieceType.O), Piece(PieceType.L)]
-        # Shuffle order
-        np.random.shuffle(base_set)
-        # Respect pieces_per_set if changed (<=3)
-        self.current_pieces = base_set[: max(0, min(self.config.pieces_per_set, len(base_set)))]
+        """Generate a new set of pieces by random sampling with replacement.
+
+        This increases difficulty vs always giving a fixed trio and prevents
+        degenerate loops under deterministic planning.
+        """
+        types = [t.value for t in PieceType]
+        k = max(0, int(self.config.pieces_per_set))
+        sampled_vals = [int(np.random.choice(types)) for _ in range(k)]
+        self.current_pieces = [Piece(PieceType(v)) for v in sampled_vals]
 
     def get_current_piece_types(self) -> List[int]:
         return [piece.piece_type.value for piece in self.current_pieces]
@@ -252,6 +255,9 @@ class BlockPuzzleGame:
         self.total_pieces_placed += 1
         self.total_lines_cleared += lines_cleared
         self.step_count += 1
+        # Enforce max steps to avoid endless episodes in deterministic setups
+        if self.step_count >= int(self.config.max_episode_steps):
+            self.game_over = True
         self.current_pieces.pop(piece_idx)
         if len(self.current_pieces) == 0:
             self.generate_new_piece_set()

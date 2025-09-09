@@ -211,12 +211,16 @@ class ValueNormalizer:
         warmup: int = 10,
         fallback_std: float = 50.0,
         tanh_scale: float = 1.0,
+        fixed_min: float | None = None,
+        fixed_max: float | None = None,
     ):
         self.decay = float(decay)
         self.min_std = float(min_std)
         self.warmup = int(warmup)
         self.fallback_std = float(fallback_std)
         self.tanh_scale = float(tanh_scale)
+        self.fixed_min = None if fixed_min is None else float(fixed_min)
+        self.fixed_max = None if fixed_max is None else float(fixed_max)
 
         self.mean = 0.0
         self.mean_sq = 0.0
@@ -253,7 +257,10 @@ class ValueNormalizer:
         return (float(x) - self.mean) / std
 
     def value_target(self, x: float) -> float:
-        """Bounded target in [-1, 1] via tanh(scale * z)."""
+        """Return target in [-1, 1]. If fixed range is set, use linear mapping; else EMA+tanh."""
+        if self.fixed_min is not None and self.fixed_max is not None and self.fixed_max > self.fixed_min:
+            t = (float(x) - self.fixed_min) / (self.fixed_max - self.fixed_min)
+            return float(np.clip(2.0 * t - 1.0, -1.0, 1.0))
         z = self.normalize(x)
         return float(np.tanh(self.tanh_scale * z))
 

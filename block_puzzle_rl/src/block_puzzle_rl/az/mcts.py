@@ -75,7 +75,7 @@ class Node:
 class MCTS:
     def __init__(
         self,
-        net: AlphaZeroNet,
+        net: Optional[AlphaZeroNet],
         c_puct: float = 1.5,
         dirichlet_alpha: float = 0.3,
         dirichlet_eps: float = 0.25,
@@ -83,14 +83,16 @@ class MCTS:
         heuristic_prior_eps: float = 0.0,
         heuristic_weights: Optional[Dict[str, float]] = None,
         score_norm: Optional[ScoreNormalizer] = None,
+        use_heuristic_everywhere: bool = False,
     ):
-        self.net = net.to(Device)
+        self.net = net.to(Device) if net is not None else None
         self.c_puct = float(c_puct)
         self.dirichlet_alpha = float(dirichlet_alpha)
         self.dirichlet_eps = float(dirichlet_eps)
         self.n_simulations = int(n_simulations)
         # Heuristic prior mixing at root (0 disables)
         self.heuristic_prior_eps = float(heuristic_prior_eps)
+        self.use_heuristic_everywhere = bool(use_heuristic_everywhere)
         # Default weights inspired by env shaping
         self.heuristic_weights: Dict[str, float] = {
             "cells": 0.05,
@@ -114,8 +116,15 @@ class MCTS:
         return {int(i): float(probs[int(i)]) for i in legal_idxs.tolist()}
 
     def _expand(self, node: Node) -> tuple[Dict[int, float], float]:
+        size = int(node.game.grid.size)
+        k = int(node.game.config.pieces_per_set)
+        n_rot = 4 if self.net is None else int(self.net.n_rot)
+        N_out = k * size * size * n_rot if self.net is None else int(self.net.N_out)
+        if self.use_heuristic_everywhere or self.net is None:
+            priors = self._heuristic_prior(node.game, node.legal_idxs, size, n_rot)
+            return priors, 0.0
         logits, v = self.net.predict(node.game)
-        priors = self._masked_softmax(logits, node.legal_idxs, self.net.N_out)
+        priors = self._masked_softmax(logits, node.legal_idxs, N_out)
         return priors, v
 
     def _add_dirichlet(self, priors: Dict[int, float], legal_idxs: np.ndarray) -> Dict[int, float]:
@@ -165,14 +174,14 @@ class MCTS:
     def run(self, root_game: BlockPuzzleGame, add_root_noise: bool = True) -> np.ndarray:
         size = int(root_game.grid.size)
         k = int(root_game.config.pieces_per_set)
-        n_rot = int(self.net.n_rot)
-        N_out = int(self.net.N_out)
+        n_rot = int(self.net.n_rot) if self.net is not None else 4
+        N_out = int(self.net.N_out) if self.net is not None else int(k * size * size * n_rot)
 
         legal_idxs, _ = legal_action_indices(root_game, size, k, n_rot)
         terminal = bool(root_game.game_over or legal_idxs.size == 0)
         priors, _ = self._expand(Node.create_root(root_game, {}, legal_idxs, terminal))
-        # Mix in heuristic prior at root if enabled
-        if self.heuristic_prior_eps > 0.0:
+        # Mix in heuristic prior at root if enabled and not already using heuristic everywhere
+        if (self.heuristic_prior_eps > 0.0) and (not self.use_heuristic_everywhere):
             h_prior = self._heuristic_prior(root_game, legal_idxs, size, n_rot)
             mixed: Dict[int, float] = {}
             for a in legal_idxs.tolist():
